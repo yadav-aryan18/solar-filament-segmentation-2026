@@ -1,0 +1,12 @@
+# Weights and Checkpoints
+*.pth
+
+# Dataset
+dataset/MAGFiLO_1.0_Kaggle_2026/
+
+# Monitoring and Logs
+mlruns/
+mlflow.db
+
+# Python Internals
+__pycache__/
