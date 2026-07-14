@@ -100,8 +100,8 @@ def main():
         data = json.load(f)
     train_ids, val_ids = split_solar_dataset(data)
 
-    train_dataset = SolarDataset(JSON_PATH, IMG_DIR, image_ids=train_ids)
-    val_dataset = SolarDataset(JSON_PATH, IMG_DIR, image_ids=val_ids)
+    train_dataset = SolarDataset(JSON_PATH, IMG_DIR, image_ids=train_ids, is_val=False)
+    val_dataset = SolarDataset(JSON_PATH, IMG_DIR, image_ids=val_ids, is_val=True)
 
     train_loader = DataLoader(train_dataset, batch_size=cfg.SOLVER.IMS_PER_BATCH, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=cfg.SOLVER.IMS_PER_BATCH, shuffle=False, num_workers=4)

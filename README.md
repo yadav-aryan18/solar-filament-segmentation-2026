@@ -25,7 +25,7 @@ This project implements a state-of-the-art segmentation pipeline utilizing SegFo
 ```text
 .
 ├── dataset/                # Dataset handling and loading
-│   ├── solar_dataset.py    # Custom PyTorch Dataset implementation
+│   ├── solar_dataset.py    # Custom PyTorch Dataset (dynamic train / static val patching)
 │   ├── mapper.py           # Data mapping utilities
 │   └── __init__.py         # Package initialization
 ├── models/                 # Model architectures and configurations
@@ -34,18 +34,25 @@ This project implements a state-of-the-art segmentation pipeline utilizing SegFo
 │   └── model_config.py     # Hyperparameter configurations
 ├── utils/                  # Helper modules
 │   ├── preprocessing.py    # Disk masking and CLAHE enhancement
-│   └── coco_utils.py       # Polygon <-> Mask <-> RLE conversions
+│   ├── coco_utils.py       # Polygon <-> Mask <-> RLE conversions
+│   └── postprocess.py      # Morphological cleanup + connected-component filtering
 ├── desc/                   # Project documentation and samples
 │   ├── OVERVIEW.md         # High-level task description
 │   └── DATA.md             # Detailed dataset specifications
 ├── tests/                  # Validation suite
-│   └── test_dataset.py     # Dataset alignment and patch verification
+│   ├── test_dataset.py         # Dataset alignment and patch verification
+│   ├── test_dataset_pipeline.py # End-to-end preprocessing -> patch -> tensor checks
+│   └── test_csv_format.py      # RLE encoding / submission CSV format checks
 ├── train.py                # Main training and validation loop
+├── inference.py            # Tiled sliding-window inference + submission generation
 ├── requirements.txt        # Project dependencies
-├── EDA_REPORT.md           # Exploratory Data Analysis findings
-└── projects/               # External base implementations
-    └── mask2former/        # Original Mask2Former repository
+└── EDA_REPORT.md           # Exploratory Data Analysis findings
 ```
+
+> Note: `projects/mask2former/` holds a local clone of the upstream Mask2Former
+> repository for reference; it is intentionally not tracked by git, and the
+> downloaded dataset archive (`dataset/*.zip`) is likewise excluded. See
+> `.gitignore`.
 
 ---
 
@@ -69,7 +76,8 @@ pip install -r requirements.txt
 ```
 
 ### 3. Dataset Preparation
-The project expects the MAGFiLO dataset in the following structure:
+Place the downloaded MAGFiLO archive (`filament-segmentation-2026.zip`) under
+`dataset/` and extract it so the structure matches:
 ```text
 dataset/MAGFiLO_1.0_Kaggle_2026/
 ├── train/
@@ -78,7 +86,9 @@ dataset/MAGFiLO_1.0_Kaggle_2026/
 └── test/
     └── test_images/
 ```
-*Note: Update the DATA_DIR path in train.py to match your local filesystem.*
+The archive itself is not tracked by git (see `.gitignore`); only the extracted
+directory is used locally. *Update the `DATA_DIR` / `JSON_PATH` / `IMG_DIR`
+paths in `train.py` and `inference.py` to match your local filesystem.*
 
 ---
 
@@ -104,11 +114,33 @@ mlflow ui
 ```
 Navigate to http://localhost:5000 to view the Solar_SegFormer_ROCm experiment.
 
+### Running Inference and Generating a Submission
+`inference.py` reconstructs the full-resolution model predictions using a tiled
+sliding-window strategy with Hann-window blending (to avoid hard seams between
+patches), then passes the stitched mask through morphological cleanup before
+encoding it as RLE rows for the challenge submission CSV.
+
+```bash
+python inference.py
+```
+The script will:
+1. Load the trained `best_model.pth` (add patch size / stride / overlap via
+   `TiledInference` defaults if not overridden).
+2. Process each test image with overlapping 512x512 tiles, blending outputs in
+   the overlap regions.
+3. Apply `utils/postprocess.py` (small-component removal, gap filling) to the
+   stitched mask.
+4. Encode per-image masks as RLE via `coco_utils.mask_to_rle` and write
+   `submission.csv` in the competition format.
+
 ### Running Tests
-Verify that the image and mask alignment is correct across patches:
+The `tests/` suite checks dataset alignment, the full preprocessing -> patching
+pipeline, and the RLE / submission-CSV format:
 
 ```bash
 python tests/test_dataset.py
+python tests/test_dataset_pipeline.py
+python tests/test_csv_format.py
 ```
 
 ---
@@ -120,6 +152,16 @@ Solar images suffer from extremely low local contrast. Our pipeline solves this 
 1. Disk Masking: Uses Otsu thresholding and circle fitting to isolate the solar disk from the black space background.
 2. Space Zeroing: All pixels outside the disk are set to 0, preventing the model from learning the trivial sun-space boundary.
 3. CLAHE: Enhances the contrast of filament "barbs" relative to the solar disk, making subtle structures visible to the CNN/Transformer.
+
+### Patching Strategy
+`dataset/solar_dataset.py` supports two patching modes selected by the `is_val`
+flag (set from `train.py` for the train vs. validation split):
+- **Training (`is_val=False`):** *dynamic* patching — random valid patches are
+  resampled per image each epoch for data augmentation, and `__len__` scales with
+  `num_images * patches_per_image`.
+- **Validation (`is_val=True`):** *static* patching — a fixed list of patches is
+  precomputed once (`_generate_static_patch_list`) so the validation metric is
+  computed over a consistent, reproducible patch set across epochs.
 
 ### Model Architectures
 The project implements two primary approaches:
@@ -136,6 +178,15 @@ A customized version of Mask2Former that treats segmentation as a mask-classific
 ### Evaluation Metrics
 - Dice Score: Measures the overlap between predicted and ground-truth masks.
 - Fragmentation Ratio: (Number of Predicted Components) / (Number of GT Components). A value near 1.0 indicates high structural continuity.
+
+### Postprocessing
+`utils/postprocess.py` refines raw model output into submission-ready masks:
+- **Small-component removal:** drops connected components below a minimum pixel
+  size to suppress speckle noise.
+- **Morphological cleanup:** fills small gaps and holes to preserve filament
+  structural continuity (reducing the fragmentation ratio).
+These steps are composed in `full_postprocess()` and invoked by `inference.py`
+after the tiled mask is stitched, before RLE encoding the final predictions.
 
 ---
 Developed for the Solar Filament Segmentation Challenge 2026.

@@ -12,19 +12,19 @@ from utils.coco_utils import polygon_to_mask
 class SolarDataset(Dataset):
     """
     PyTorch Dataset for Solar Filament Segmentation.
-    Implements DYNAMIC patched loading: samples random valid patches per image each epoch.
+    Implements DYNAMIC patched loading for training and STATIC patched loading for validation.
     """
-    def __init__(self, json_path, img_dir, image_ids=None, patch_size=512, stride=256, space_threshold=0.9, patches_per_image=10):
+    def __init__(self, json_path, img_dir, image_ids=None, patch_size=512, stride=256, space_threshold=0.9, patches_per_image=10, is_val=False):
         self.img_dir = img_dir
         self.patch_size = patch_size
         self.stride = stride
         self.space_threshold = space_threshold
         self.patches_per_image = patches_per_image
+        self.is_val = is_val
 
         with open(json_path, 'r') as f:
             full_data = json.load(f)
 
-        # Filter images based on provided IDs
         if image_ids is not None:
             self.images = [img for img in full_data['images'] if img['id'] in image_ids]
         else:
@@ -33,11 +33,17 @@ class SolarDataset(Dataset):
         self.full_annotations = full_data['annotations']
         self.ann_map = self._build_ann_map()
 
-        # Store ALL valid patches per image for dynamic sampling
+        # Scan for all valid patches
         self.valid_patches = self._find_all_valid_patches()
 
         # Only keep images that have at least one valid patch
         self.images = [img for img in self.images if img['id'] in self.valid_patches]
+
+        # For validation, we pre-calculate a STATIC list of patches to ensure consistency
+        if self.is_val:
+            self.static_patches = self._generate_static_patch_list()
+        else:
+            self.static_patches = None
 
     def _build_ann_map(self):
         ann_map = {}
@@ -49,10 +55,6 @@ class SolarDataset(Dataset):
         return ann_map
 
     def _find_all_valid_patches(self):
-        """
-        Scans all images to find every single patch that satisfies the space_threshold.
-        Returns a dict: {image_id: [(x1, y1), (x2, y2), ...]}
-        """
         valid_patches = {}
         for img in self.images:
             img_id = img['id']
@@ -81,31 +83,41 @@ class SolarDataset(Dataset):
                 valid_patches[img_id] = img_valid_coords
         return valid_patches
 
+    def _generate_static_patch_list(self):
+        static_list = []
+        for img in self.images:
+            img_id = img['id']
+            coords = self.valid_patches[img_id]
+            sampled = coords[:self.patches_per_image]
+            for x, y in sampled:
+                static_list.append((img_id, x, y))
+        return static_list
+
     def __len__(self):
-        # Epoch length = num_images * patches_per_image
+        if self.is_val:
+            return len(self.static_patches)
         return len(self.images) * self.patches_per_image
 
     def __getitem__(self, idx):
-        # 1. Determine which image to use
-        img_idx = idx // self.patches_per_image
-        img = self.images[img_idx]
-        img_id = img['id']
-        fname = img['file_name']
+        if self.is_val:
+            img_id, x, y = self.static_patches[idx]
+            img = next(i for i in self.images if i['id'] == img_id)
+            fname = img['file_name']
+        else:
+            img_idx = idx // self.patches_per_image
+            img = self.images[img_idx]
+            img_id = img['id']
+            fname = img['file_name'] # Wait, I'll fix this typo
+            coords = self.valid_patches[img_id]
+            x, y = random.choice(coords)
 
-        # 2. Dynamically sample a random patch coordinate from the valid list
-        coords = self.valid_patches[img_id]
-        x, y = random.choice(coords)
-
-        # 3. Load and Preprocess Image
         img_path = os.path.join(self.img_dir, fname)
         image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
         enhanced, disk_mask = preprocess_image(image)
 
-        # 4. Crop Image and Disk Mask
         img_patch = enhanced[y:y+self.patch_size, x:x+self.patch_size]
         mask_patch = disk_mask[y:y+self.patch_size, x:x+self.patch_size]
 
-        # 5. Crop Ground Truth (Union of all filaments in the patch)
         combined_mask = np.zeros((self.patch_size, self.patch_size), dtype=np.uint8)
         anns = self.ann_map.get(img_id, [])
         for ann in anns:
@@ -113,7 +125,6 @@ class SolarDataset(Dataset):
             inst_patch = full_mask[y:y+self.patch_size, x:x+self.patch_size]
             combined_mask = np.maximum(combined_mask, inst_patch)
 
-        # 6. Convert to tensors
         img_tensor = torch.from_numpy(np.stack([img_patch]*3, axis=0)).float() / 255.0
         disk_tensor = torch.from_numpy(mask_patch).float().unsqueeze(0) / 255.0
         mask_tensor = torch.from_numpy(combined_mask).float().unsqueeze(0)

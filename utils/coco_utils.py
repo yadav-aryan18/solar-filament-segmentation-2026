@@ -33,15 +33,15 @@ def mask_to_rle(mask):
         mask (np.ndarray): Binary mask (0 or 1).
 
     Returns:
-        rle_string (str): The RLE encoded counts string.
+        rle_string (str): The RLE encoded counts as a UTF-8 string.
     """
-    # mask must be uint8
     if mask.dtype != np.uint8:
         mask = mask.astype(np.uint8)
 
-    # pycocotools.mask.encode returns a dictionary {'counts': ..., 'size': ...}
+    # pycocotools.mask.encode returns {'counts': <bytes>, 'size': [...]}
     rle = coco_mask.encode(np.asfortranarray(mask))
-    return rle['counts']
+    # Decode the compressed bytes to a UTF-8 string for the competition format
+    return rle['counts'].decode('utf-8')
 
 def rle_to_mask(rle_string, shape=(2048, 2048)):
     """

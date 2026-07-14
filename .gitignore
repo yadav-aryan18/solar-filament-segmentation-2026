@@ -3,6 +3,13 @@
 
 # Dataset
 dataset/MAGFiLO_1.0_Kaggle_2026/
+dataset/*.zip
+
+# Cloned third-party repos (kept locally, not tracked)
+projects/
+
+# Challenge submission output (regenerated, not version-controlled)
+submission.csv
 
 # Monitoring and Logs
 mlruns/
